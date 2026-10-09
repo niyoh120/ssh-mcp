@@ -1,0 +1,93 @@
+name: build
+
+on:
+  schedule:
+    # Daily 21:00 UTC = 05:00 CST, quiet hours on eq12
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'ssh-mcp version to build (defaults to npm dist-tag latest)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Resolve version to build
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            V="${{ inputs.version }}"
+          else
+            V=$(curl -fsSL https://registry.npmjs.org/ssh-mcp | python3 -c "import json,sys; print(json.load(sys.stdin)['dist-tags']['latest'])")
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+          echo "Building ssh-mcp ${V}"
+
+      - name: Skip if this version is already on GHCR
+        id: dup
+        run: |
+          TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${GITHUB_REPOSITORY,,}:pull" | python3 -c "import json,sys; print(json.load(sys.stdin)['token'])")
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json" \
+            "https://ghcr.io/v2/${GITHUB_REPOSITORY,,}/manifests/${{ steps.ver.outputs.version }}")
+          if [ "$CODE" = "200" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Image tag ${{ steps.ver.outputs.version }} already published, skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Image tag ${{ steps.ver.outputs.version }} missing (HTTP $CODE), will build"
+          fi
+
+      - name: Set up QEMU
+        if: steps.dup.outputs.exists == 'false'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.dup.exists == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.dup.outputs.exists == 'false'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        if: steps.dup.outputs.exists == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            SSH_MCP_VERSION=${{ steps.ver.outputs.version }}
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.ver.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+
+      - name: Bump SSH_MCP_VERSION in Dockerfile
+        if: steps.dup.outputs.exists == 'false'
+        run: |
+          sed -i "s|ARG SSH_MCP_VERSION=.*|ARG SSH_MCP_VERSION=${{ steps.ver.outputs.version }}|" deploy/Dockerfile
+          git diff --quiet && { echo "Dockerfile already pinned to ${{ steps.ver.outputs.version }}"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/Dockerfile
+          git commit -m "chore(deps): pin ssh-mcp ${{ steps.ver.outputs.version }}" --no-verify
+          git push

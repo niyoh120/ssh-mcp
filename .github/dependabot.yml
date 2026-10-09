@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Refresh the pinned node:22-slim digest monthly, same arrangement the
+  # upstream repo uses for its own Dockerfile.
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule:
+      interval: monthly
+    groups:
+      docker-base-images:
+        patterns:
+          - "*"
+  # Keep GitHub Actions pinned to their latest major.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

@@ -1,0 +1,118 @@
+# ssh-mcp 主机清单
+#
+# 这份文件是运行时挂载进容器的，改完不需要重新构建镜像。
+#
+# 怎么改：Coolify 应用 "ssh-mcp" → Storages → config.toml → 保存 → 重新部署
+#
+# 关于"默认主机"：本文件刻意不设置 defaultProfile。
+# 每次调用工具都必须显式传 host（主机别名），不传会报错提示该传什么参数，
+# 不会静默落到某台机器上执行 —— 避免默认值配错导致在错误的机器上跑命令。
+#
+# 容器里可引用的路径：
+#   ~/.ssh/<文件名>   挂在 /mnt/ssh-mcp/keys/ 下的每个 file storage，启动时都会被
+#                     复制到这里，文件名保持不变 —— keyRef 里的名字就是它
+#
+# 下面几条启动时强校验，不合规直接拒绝启动：
+#   * 每个 profile 的 role + group 必须能对应到真实的权限矩阵
+#   * group 省略时按 profile 名字猜，猜不出来的按 prod（最严）处理，建议显式写
+#   * 内置策略里属于 privileged 的命令（sudo / su 等）在 prod 上对任何 role 都拒绝；
+#     非生产环境请如实标注 group，不要为了开权限而乱标
+#   * profiles 至少保留 1 条，空列表会被判定为配置非法
+#
+# 命令分级与审批（当前 approvalMode = "ask-destructive"）：
+#   read-only    ls / cat / grep / df / systemctl status 等      直接执行
+#   safe         git pull / npm install / 一般写操作             直接执行
+#   destructive  rm -rf <路径>、带写或执行参数的 find 等          弹 WebUI 审批
+#   privileged   sudo / su / doas                              弹 WebUI 审批
+
+[defaults]
+# defaultProfile 刻意不设置：不指定默认主机。
+# 每次调用工具都必须显式传 host（主机别名）；不传会直接报错并提示该传什么，
+# 不会静默落到某台机器上执行。
+approvalMode = "ask-destructive"      # auto | ask-destructive | ask-all | deny
+commandTimeoutMs = 60000              # 单条命令超时（毫秒）
+sessionMaxPerConnection = 5           # 每台主机最大并发会话数
+sessionIdleTimeoutMs = 600000         # 会话空闲多久自动关闭（10 分钟）
+sessionBackgroundMaxMs = 3600000      # 后台会话最长存活（1 小时）
+connectionIdleReapMs = 900000         # 连接空闲多久回收（15 分钟）
+commandMaxChars = 5000                # 命令最大长度（字符）
+commandMaxOutputBytes = 1048576       # 单条命令输出上限（1MB）
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 下面是主机条目。把这段换成你的真实主机；每多一台，复制整个 [[profiles]] 块。
+# 注意：至少要保留 1 条，不能全删 —— 空列表会让服务拒绝启动。
+# ─────────────────────────────────────────────────────────────────────────────
+[[profiles]]
+name = "TEMPLATE-EDIT-ME"                 # 别名，list-connections 里显示的名字
+host = "192.168.3.1"                      # IP 或域名，需能从 eq12 直连
+port = 22                                 # SSH 端口
+user = "root"                             # 建议改用普通账号 + 按命令授权的 sudoers
+auth = "key"                              # agent | key | password | keychain
+keyRef = "~/.ssh/id_ed25519"              # 必须与 /mnt/ssh-mcp/keys/ 下的文件名一致
+group = "dev"                             # 策略层级：prod | staging | dev（也可自定义）。
+                                          # 决定 role×tier 那一格的权限；prod 下任何 role 都没有
+                                          # privileged（sudo/su 被直接拒绝，不是弹审批）。
+                                          # 不写则按名字猜（prod/staging/dev/local/test/sandbox），
+                                          # 猜不到一律按 prod 处理。homelab 机器填 dev。
+role = "admin"                            # viewer | operator | admin
+approvalPolicy = "ask-destructive"        # 该主机单独的审批策略，可覆盖 defaults
+readOnly = false                          # true 则只允许只读命令
+tty = false                               # 是否分配伪终端（pty）。偏交互的程序才需要开：
+                                          # ssh / top / vim / less、依赖 isatty 或 stty 的脚本。
+                                          # 开了之后 stderr 会并进 stdout、换行变 \r\n。
+                                          # sudo 不需要它 —— 用 privileged-command 工具即可。
+                                          # 也可以在单次 run-command 调用时传 tty=true 覆盖。
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 示例：生产机，只读监控
+# ─────────────────────────────────────────────────────────────────────────────
+# [[profiles]]
+# name = "prod-web-1"
+# host = "10.0.1.50"
+# port = 22
+# user = "deploy"
+# auth = "key"
+# keyRef = "~/.ssh/id_ed25519_prod"
+# group = "prod"
+# role = "operator"
+# readOnly = true
+# approvalPolicy = "ask-all"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 示例：经跳板机访问内网主机（ProxyJump）。只做 TCP 隧道，不做 agent 转发。
+# via 填的是另一个 profile 的 name。
+# ─────────────────────────────────────────────────────────────────────────────
+# [[profiles]]
+# name = "bastion"
+# host = "bastion.example.com"
+# port = 22
+# user = "jump"
+# auth = "key"
+# keyRef = "~/.ssh/id_ed25519"
+# group = "dev"
+# role = "viewer"
+# readOnly = true
+#
+# [[profiles]]
+# name = "internal-db"
+# host = "10.0.1.50"            # 内网地址，直连不通
+# port = 22
+# user = "dbadmin"
+# auth = "key"
+# keyRef = "~/.ssh/id_ed25519_db"
+# group = "staging"
+# role = "operator"
+# via = "bastion"               # 经由上面的跳板机
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 可选：给内置权限矩阵补格。比如对如实标注为 prod 的主机开放 sudo
+#（只影响写出来的那一格，其它 role / tier 保持默认）。
+# ─────────────────────────────────────────────────────────────────────────────
+# [policy.roleBindings.admin]
+# prod = ["read-only", "safe", "destructive", "privileged"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 可选：额外的拒绝规则（正则），叠加在内置黑名单之上，不会替换它。
+# ─────────────────────────────────────────────────────────────────────────────
+# [policy]
+# denylist = ["^terraform\\s+destroy"]
