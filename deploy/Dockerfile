@@ -20,7 +20,7 @@ ARG NODE_IMAGE=node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1dd
 FROM ${NODE_IMAGE}
 WORKDIR /app
 
-ARG SSH_MCP_VERSION=2.18.0
+ARG SSH_MCP_VERSION=2.19.0
 
 RUN groupadd -r -g 65532 appgroup && useradd -r -u 65532 -g appgroup appuser
 
